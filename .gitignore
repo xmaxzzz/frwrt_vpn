@@ -1,0 +1,6 @@
+# Никогда не коммитить живые конфиги/секреты
+local.yaml
+profile.local.yaml
+*.secret
+secrets/
+/etc/

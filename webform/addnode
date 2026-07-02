@@ -1,0 +1,245 @@
+#!/bin/bash
+# nikki add-node web form (CGI). Parses share-links into mihomo YAML nodes,
+# appends to the local nikki profile, prepends to the PROXY group, reloads nikki.
+# Security: runs as root under a LAN-only uhttpd instance. No eval; user values
+# are passed to yq via env (strenv); names sanitized; HTML output escaped.
+
+PROFILE="/etc/nikki/profiles/local.yaml"
+SELF="/cgi-bin/addnode"
+
+urldecode() { local d="${1//+/ }"; printf '%b' "${d//%/\\x}"; }
+
+html_escape() {
+  local s="$1"
+  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; s="${s//\"/&quot;}"
+  printf '%s' "$s"
+}
+
+sanitize_name() { local s; s=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9._-'); printf '%s' "${s:0:40}"; }
+
+# qp <key> <querystring>  -> urldecoded value
+qp() {
+  local key="$1" qs="$2" pair
+  local IFS='&'
+  for pair in $qs; do
+    case "$pair" in "$key="*) urldecode "${pair#*=}"; return 0;; esac
+  done
+  return 1
+}
+
+send_headers() { printf 'Content-Type: text/html; charset=utf-8\r\n\r\n'; }
+redirect() { printf 'Status: 302 Found\r\nLocation: %s?msg=%s\r\n\r\n' "$SELF" "$1"; exit 0; }
+
+reload_nikki() {
+  if [ "$(uci -q get nikki.config.enabled)" = "1" ]; then
+    ( /etc/init.d/nikki reload >/dev/null 2>&1 & )
+  fi
+}
+
+parse_link() {
+  local link="$1" rest frag hostport
+  SCHEME="${link%%://*}"
+  rest="${link#*://}"
+  frag=""; case "$rest" in *#*) frag="${rest#*#}"; rest="${rest%%#*}";; esac
+  RAW_NAME="$(urldecode "$frag")"
+  QUERY=""; case "$rest" in *\?*) QUERY="${rest#*\?}"; rest="${rest%%\?*}";; esac
+  USERINFO=""; hostport="$rest"
+  case "$rest" in *@*) USERINFO="${rest%@*}"; hostport="${rest##*@}";; esac
+  HOST="${hostport%:*}"; PORT="${hostport##*:}"
+  HOST="${HOST#[}"; HOST="${HOST%]}"
+}
+
+do_add() {
+  local link name base i nf e
+  link="$(printf '%s' "$1" | tr -d '[:space:]')"
+  [ -n "$link" ] || redirect "empty"
+  parse_link "$link"
+  { [ -n "$HOST" ] && [ -n "$PORT" ]; } || redirect "badlink"
+  case "$PORT" in ''|*[!0-9]*) redirect "badport";; esac
+
+  # Resolve + pin server IP. mihomo otherwise loops trying to resolve the proxy
+  # server's DOMAIN through the not-yet-established tunnel. Keep the hostname for SNI.
+  ORIGHOST="$HOST"
+  case "$HOST" in
+    *[!0-9.]*)
+      RIP="$(nslookup "$HOST" 77.88.8.8 2>/dev/null | awk '/^Name/{f=1} f&&/Address/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/){print $i; exit}}')"
+      [ -n "$RIP" ] || RIP="$(nslookup "$HOST" 8.8.8.8 2>/dev/null | awk '/^Name/{f=1} f&&/Address/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/){print $i; exit}}')"
+      [ -n "$RIP" ] && HOST="$RIP"
+      ;;
+  esac
+
+  name="$(sanitize_name "$RAW_NAME")"
+  [ -n "$name" ] || name="$(sanitize_name "$2")"
+  [ -n "$name" ] || name="$(sanitize_name "${SCHEME}-${HOST}")"
+  [ -n "$name" ] || name="node"
+  base="$name"; i=2
+  while [ "$(NAME="$name" yq '[.proxies[]?.name] | contains([strenv(NAME)])' "$PROFILE" 2>/dev/null)" = "true" ]; do
+    name="${base}-${i}"; i=$((i+1)); [ "$i" -gt 50 ] && break
+  done
+
+  nf="/tmp/addnode.$$.yaml"
+  export NAME="$name" SERVER="$HOST" PORT="$PORT"
+
+  case "$SCHEME" in
+    vless)
+      local security type sni fp pbk sid flow wspath wshost gsn
+      export UUID="$USERINFO"
+      security="$(qp security "$QUERY")"; type="$(qp type "$QUERY")"; sni="$(qp sni "$QUERY")"
+      fp="$(qp fp "$QUERY")"; pbk="$(qp pbk "$QUERY")"; sid="$(qp sid "$QUERY")"; flow="$(qp flow "$QUERY")"
+      wspath="$(qp path "$QUERY")"; wshost="$(qp host "$QUERY")"; gsn="$(qp serviceName "$QUERY")"
+      [ -z "$sni" ] && sni="$(qp peer "$QUERY")"
+      e='.name=strenv(NAME) | .type="vless" | .server=strenv(SERVER) | .port=(strenv(PORT)|tonumber) | .uuid=strenv(UUID) | .udp=true'
+      if [ -n "$type" ] && [ "$type" != "tcp" ]; then export NET="$type"; e="$e | .network=strenv(NET)"; fi
+      if [ "$security" = "reality" ]; then
+        export SNI="$sni" PBK="$pbk" SID="$sid"
+        e="$e | .tls=true | .servername=strenv(SNI) | .\"reality-opts\".\"public-key\"=strenv(PBK)"
+        [ -n "$sid" ] && e="$e | .\"reality-opts\".\"short-id\"=strenv(SID)"
+      elif [ "$security" = "tls" ] || [ "$security" = "xtls" ]; then
+        [ -z "$sni" ] && sni="$ORIGHOST"
+        export SNI="$sni"; e="$e | .tls=true | .servername=strenv(SNI)"
+      fi
+      [ -n "$fp" ] && { export FP="$fp"; e="$e | .\"client-fingerprint\"=strenv(FP)"; }
+      [ -n "$flow" ] && { export FLOW="$flow"; e="$e | .flow=strenv(FLOW)"; }
+      if [ "$type" = "ws" ]; then
+        export WSPATH="${wspath:-/}" WSHOST="$wshost"
+        e="$e | .\"ws-opts\".path=strenv(WSPATH)"
+        [ -n "$wshost" ] && e="$e | .\"ws-opts\".headers.Host=strenv(WSHOST)"
+      elif [ "$type" = "grpc" ] && [ -n "$gsn" ]; then
+        export GSN="$gsn"; e="$e | .\"grpc-opts\".\"grpc-service-name\"=strenv(GSN)"
+      fi
+      yq -n "$e" > "$nf" || redirect "parsefail"
+      ;;
+    hysteria2|hy2)
+      local sni insecure obfs obfspw ports
+      export PASS="$USERINFO"
+      sni="$(qp sni "$QUERY")"; insecure="$(qp insecure "$QUERY")"; obfs="$(qp obfs "$QUERY")"
+      obfspw="$(qp obfs-password "$QUERY")"; ports="$(qp mport "$QUERY")"
+      [ -z "$sni" ] && sni="$ORIGHOST"
+      e='.name=strenv(NAME) | .type="hysteria2" | .server=strenv(SERVER) | .port=(strenv(PORT)|tonumber) | .password=strenv(PASS)'
+      [ -n "$sni" ] && { export SNI="$sni"; e="$e | .sni=strenv(SNI)"; }
+      [ "$insecure" = "1" ] && e="$e | .\"skip-cert-verify\"=true"
+      if [ -n "$obfs" ]; then
+        export OBFS="$obfs"; e="$e | .obfs=strenv(OBFS)"
+        [ -n "$obfspw" ] && { export OBFSPW="$obfspw"; e="$e | .\"obfs-password\"=strenv(OBFSPW)"; }
+      fi
+      [ -n "$ports" ] && { export PORTS="$ports"; e="$e | .ports=strenv(PORTS)"; }
+      yq -n "$e" > "$nf" || redirect "parsefail"
+      ;;
+    trojan)
+      local sni type wspath wshost
+      export PASS="$USERINFO"
+      sni="$(qp sni "$QUERY")"; [ -z "$sni" ] && sni="$(qp peer "$QUERY")"; [ -z "$sni" ] && sni="$ORIGHOST"
+      type="$(qp type "$QUERY")"; wspath="$(qp path "$QUERY")"; wshost="$(qp host "$QUERY")"
+      e='.name=strenv(NAME) | .type="trojan" | .server=strenv(SERVER) | .port=(strenv(PORT)|tonumber) | .password=strenv(PASS) | .udp=true'
+      [ -n "$sni" ] && { export SNI="$sni"; e="$e | .sni=strenv(SNI)"; }
+      [ "$(qp allowInsecure "$QUERY")" = "1" ] && e="$e | .\"skip-cert-verify\"=true"
+      if [ "$type" = "ws" ]; then
+        export WSPATH="${wspath:-/}" WSHOST="$wshost"
+        e="$e | .network=\"ws\" | .\"ws-opts\".path=strenv(WSPATH)"
+        [ -n "$wshost" ] && e="$e | .\"ws-opts\".headers.Host=strenv(WSHOST)"
+      fi
+      yq -n "$e" > "$nf" || redirect "parsefail"
+      ;;
+    *)
+      redirect "unsupported"
+      ;;
+  esac
+
+  export NODEFILE="$nf"
+  yq -i '.proxies = ((.proxies // []) + [ load(strenv(NODEFILE)) ])' "$PROFILE" || { rm -f "$nf"; redirect "writefail"; }
+  yq -i '(.proxy-groups[] | select(.name == "PROXY") | .proxies) |= ([strenv(NAME)] + (. // []))' "$PROFILE"
+  rm -f "$nf"
+  reload_nikki
+  redirect "added"
+}
+
+do_del() {
+  local name; name="$(sanitize_name "$1")"
+  [ -n "$name" ] || redirect "noname"
+  NAME="$name" yq -i 'del(.proxies[] | select(.name == strenv(NAME)))' "$PROFILE"
+  NAME="$name" yq -i '(.proxy-groups[] | select(.name == "PROXY") | .proxies) |= map(select(. != strenv(NAME)))' "$PROFILE"
+  reload_nikki
+  redirect "deleted"
+}
+
+render() {
+  local msg="$1" t="" cls="" enabled state rows nm tp sv
+  case "$msg" in
+    added)       t="✓ Сервер добавлен."; cls="ok";;
+    deleted)     t="✓ Сервер удалён."; cls="ok";;
+    unsupported) t="✗ Поддерживаются только vless:// , hysteria2:// , trojan://"; cls="err";;
+    badlink)     t="✗ Не удалось разобрать ссылку."; cls="err";;
+    badport)     t="✗ Некорректный порт в ссылке."; cls="err";;
+    empty)       t="✗ Пустая ссылка."; cls="err";;
+    parsefail|writefail) t="✗ Ошибка обработки ссылки."; cls="err";;
+    noname)      t="✗ Не указано имя для удаления."; cls="err";;
+    *) t="";;
+  esac
+  enabled="$(uci -q get nikki.config.enabled)"
+  if [ "$enabled" = "1" ]; then state="включён (изменения применяются сразу)"; else state="выключен (сервер сохранится, включит администратор)"; fi
+
+  rows=""
+  while IFS=$'\t' read -r nm tp sv; do
+    [ -n "$nm" ] || continue
+    rows="$rows<tr><td>$(html_escape "$nm")</td><td>$(html_escape "$tp")</td><td>$(html_escape "$sv")</td><td><form method=post onsubmit=\"return confirm('Удалить $(html_escape "$nm")?')\"><input type=hidden name=action value=del><input type=hidden name=delname value=\"$(html_escape "$nm")\"><button class=del>✕</button></form></td></tr>"
+  done < <(yq '.proxies[]? | [.name, .type, .server] | @tsv' "$PROFILE" 2>/dev/null)
+  [ -n "$rows" ] || rows="<tr><td colspan=4 class=empty>пока нет серверов</td></tr>"
+
+  send_headers
+  cat <<HTML
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Добавить VPN-сервер</title>
+<style>
+  :root{color-scheme:light dark}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:1.4rem} h2{font-size:1.1rem;margin-top:1.6rem}
+  textarea,input{width:100%;box-sizing:border-box;padding:.6rem;font-size:1rem;border:1px solid #8888;border-radius:8px;background:transparent;color:inherit}
+  textarea{font-family:ui-monospace,monospace;resize:vertical}
+  label{display:block;margin:.8rem 0 .3rem;font-weight:600}
+  button{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+  button.del{margin:0;padding:.2rem .55rem;background:#dc2626;font-size:.9rem}
+  table{width:100%;border-collapse:collapse;margin-top:.6rem}
+  th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid #8883;font-size:.95rem;word-break:break-all}
+  td form{display:inline}
+  .msg{padding:.7rem 1rem;border-radius:8px;margin:.8rem 0;font-weight:600}
+  .ok{background:#16a34a22;color:#16a34a} .err{background:#dc262622;color:#dc2626}
+  .note{color:#8a8a8a;font-size:.9rem} .empty{color:#8a8a8a;text-align:center}
+  code{background:#8882;padding:.1rem .3rem;border-radius:4px}
+</style></head><body>
+<h1>Добавить VPN-сервер по ссылке</h1>
+HTML
+  [ -n "$t" ] && printf '<div class="msg %s">%s</div>\n' "$cls" "$t"
+  cat <<HTML
+<form method="post">
+<input type="hidden" name="action" value="add">
+<label>Ссылка на сервер</label>
+<textarea name="link" rows="3" required placeholder="vless://... | hysteria2://... | trojan://..."></textarea>
+<label>Имя (необязательно)</label>
+<input name="name" placeholder="если пусто — возьму из ссылки (после #)">
+<button type="submit">Добавить сервер</button>
+</form>
+<h2>Текущие серверы</h2>
+<table><thead><tr><th>Имя</th><th>Тип</th><th>Сервер</th><th></th></tr></thead><tbody>
+$rows
+</tbody></table>
+<p class="note">Поддерживаются: <code>vless://</code> (tls/reality/ws/grpc), <code>hysteria2://</code>, <code>trojan://</code>.<br>
+nikki сейчас: $state</p>
+</body></html>
+HTML
+}
+
+# ---------- request dispatch ----------
+if [ "$REQUEST_METHOD" = "POST" ]; then
+  len="${CONTENT_LENGTH:-0}"
+  body=""
+  case "$len" in ''|*[!0-9]*) len=0;; esac
+  [ "$len" -gt 0 ] && [ "$len" -le 65536 ] && IFS= read -r -N "$len" body
+  action="$(qp action "$body")"
+  case "$action" in
+    add) do_add "$(qp link "$body")" "$(qp name "$body")";;
+    del) do_del "$(qp delname "$body")";;
+    *)   redirect "badlink";;
+  esac
+fi
+render "$(qp msg "$QUERY_STRING")"

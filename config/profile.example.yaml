@@ -1,0 +1,45 @@
+# Пример локального профиля nikki (mihomo): /etc/nikki/profiles/local.yaml
+# Серверы добавляются веб-формой addnode ИЛИ вручную здесь. Всё ниже — плейсхолдеры.
+#
+# Выбор этого профиля:  uci set nikki.config.profile='file:local.yaml'
+#
+# ВАЖНО: в поле server лучше держать IP (домен → в sni), иначе mihomo зацикливается,
+# резолвя домен прокси-сервера через ещё не поднятый туннель. Веб-форма пинует IP сама.
+
+proxies:
+  # --- Hysteria2 ---
+  # - name: MY_HY2
+  #   type: hysteria2
+  #   server: 203.0.113.10          # IP сервера
+  #   port: 443
+  #   password: <PASSWORD>
+  #   sni: proxy.example.com         # домен для TLS SNI
+  #   skip-cert-verify: false
+  #   # obfs: salamander
+  #   # obfs-password: <OBFS_PASSWORD>
+  #   # ports: "20000-40000"         # порт-хоппинг (если есть)
+
+  # --- VLESS (Reality) ---
+  # - name: MY_VLESS
+  #   type: vless
+  #   server: 203.0.113.10
+  #   port: 443
+  #   uuid: <UUID>
+  #   udp: true
+  #   tls: true
+  #   servername: www.microsoft.com  # для reality — декой-SNI из ссылки
+  #   client-fingerprint: chrome
+  #   flow: xtls-rprx-vision
+  #   reality-opts:
+  #     public-key: <PBK>
+  #     short-id: <SID>
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DIRECT
+      # - MY_HY2
+
+rules:
+  - MATCH,PROXY
