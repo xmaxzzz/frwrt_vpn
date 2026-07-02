@@ -1,3 +1,47 @@
 <!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="0; url=/cgi-bin/addnode"></head>
-<body><a href="/cgi-bin/addnode">Добавить VPN-сервер</a></body></html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VPN-роутер</title>
+<style>
+  :root{color-scheme:light dark}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:720px;margin:32px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:1.5rem;margin-bottom:.2rem}
+  .sub{color:#8a8a8a;margin-top:0}
+  .cards{display:grid;gap:14px;margin-top:1.4rem}
+  a.card{display:flex;gap:14px;align-items:flex-start;text-decoration:none;color:inherit;
+    border:1px solid #8884;border-radius:12px;padding:16px 18px;transition:border-color .15s,background .15s}
+  a.card:hover{border-color:#2563eb;background:#2563eb11}
+  .ico{font-size:1.7rem;line-height:1}
+  .t{font-weight:600;font-size:1.05rem}
+  .d{color:#8a8a8a;font-size:.9rem;margin-top:.15rem}
+  footer{color:#8a8a8a;font-size:.85rem;margin-top:2rem}
+  code{background:#8882;padding:.1rem .3rem;border-radius:4px}
+</style></head><body>
+<h1>🛡️ VPN-роутер</h1>
+<p class="sub">Управление шлюзом mihomo/nikki</p>
+
+<div class="cards">
+  <a class="card" href="/cgi-bin/addnode">
+    <div class="ico">🌐</div>
+    <div><div class="t">Серверы</div>
+      <div class="d">Добавить сервер по ссылке (vless / hysteria2 / trojan), переключить активный, удалить</div></div>
+  </a>
+  <a class="card" id="dash" href="#">
+    <div class="ico">📊</div>
+    <div><div class="t">Дашборд mihomo</div>
+      <div class="d">Тест задержки узлов, статистика трафика, переключение в реальном времени</div></div>
+  </a>
+  <a class="card" id="luci" href="#">
+    <div class="ico">⚙️</div>
+    <div><div class="t">Роутер (LuCI)</div>
+      <div class="d">Полные настройки OpenWrt/FriendlyWrt: сеть, firewall, nikki</div></div>
+  </a>
+</div>
+
+<footer>Совет: добавь эту страницу в закладки или сделай стартовой в браузере.</footer>
+
+<script>
+  var h = location.hostname, p = location.protocol;
+  document.getElementById('dash').href = p + '//' + h + ':9090/ui/';
+  document.getElementById('luci').href = p + '//' + h + '/';
+</script>
+</body></html>

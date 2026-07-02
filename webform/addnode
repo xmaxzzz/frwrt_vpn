@@ -243,9 +243,12 @@ SWEOF
   .msg{padding:.7rem 1rem;border-radius:8px;margin:.8rem 0;font-weight:600}
   .ok{background:#16a34a22;color:#16a34a} .err{background:#dc262622;color:#dc2626}
   .note{color:#8a8a8a;font-size:.9rem} .empty{color:#8a8a8a;text-align:center}
+  .nav{font-size:.9rem;margin:.1rem 0 1.1rem} .nav a{color:#2563eb;text-decoration:none} .nav a:hover{text-decoration:underline}
   code{background:#8882;padding:.1rem .3rem;border-radius:4px}
 </style></head><body>
 <h1>Добавить VPN-сервер по ссылке</h1>
+<p class="nav"><a href="/">← Главная</a> &middot; <a id="nd" href="#">Дашборд</a> &middot; <a id="nl" href="#">LuCI</a></p>
+<script>var h=location.hostname,p=location.protocol;document.getElementById('nd').href=p+'//'+h+':9090/ui/';document.getElementById('nl').href=p+'//'+h+'/';</script>
 HTML
   [ -n "$t" ] && printf '<div class="msg %s">%s</div>\n' "$cls" "$t"
   cat <<HTML
