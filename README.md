@@ -31,7 +31,7 @@
 
 | Путь | Что это |
 |------|---------|
-| `webform/addnode` | CGI-скрипт (bash): парсит share-ссылку → YAML-узел mihomo, дописывает в профиль, релоадит nikki |
+| `webform/addnode` | CGI (bash): добавление сервера по share-ссылке (→ YAML-узел mihomo), список/удаление, **переключение активного сервера** |
 | `webform/index.html` | редирект на форму |
 | `scripts/setup-webform.sh` | ставит форму на отдельный LAN-only экземпляр uhttpd |
 | `scripts/setup-nikki-dns.sh` | чинит DNS-резолверы nikki (иначе `dns resolve failed`) |
@@ -48,6 +48,24 @@
    sh scripts/setup-webform.sh            # веб-форма на http://192.168.2.1:9080/
    ```
 4. Открыть с LAN `http://192.168.2.1:9080/`, вставить ссылку сервера — готово.
+
+## Переключение между серверами
+
+Группа `PROXY` — это `select`; активный сервер = выбранный в группе. Три способа:
+
+1. **Веб-форма** `http://192.168.2.1:9080/` — блок «Активный сервер»: радио-кнопки со всеми
+   серверами + «Переключить» (форма дёргает mihomo API `PUT /proxies/PROXY`).
+2. **Дашборд mihomo (zashboard)** — `http://<роутер>:9090/ui/`
+   (secret: `uci get nikki.mixin.api_secret`): выбор узла, тест задержки, реалтайм.
+3. **API/CLI:**
+   ```sh
+   SECRET=$(uci get nikki.mixin.api_secret)
+   curl -X PUT -H "Authorization: Bearer $SECRET" \
+     http://127.0.0.1:9090/proxies/PROXY -d '{"name":"MY_HY2"}'
+   ```
+
+Автовыбор по задержке: смените тип группы `PROXY` с `select` на `url-test` — mihomo сам
+будет держать самый быстрый узел.
 
 ## Два подводных камня (важно)
 

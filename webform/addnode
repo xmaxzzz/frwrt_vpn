@@ -162,6 +162,20 @@ do_del() {
   redirect "deleted"
 }
 
+do_select() {
+  local sel secret api
+  sel="$(printf '%s' "$1" | tr -cd 'A-Za-z0-9._-')"
+  [ -n "$sel" ] || redirect "badsel"
+  secret="$(uci -q get nikki.mixin.api_secret)"
+  api="http://127.0.0.1:9090"
+  # switch only to a real member of the group
+  if curl -s -m 4 -H "Authorization: Bearer $secret" "$api/proxies/PROXY" | yq -p=json '.all[]' 2>/dev/null | grep -qx "$sel"; then
+    curl -s -m 4 -X PUT -H "Authorization: Bearer $secret" "$api/proxies/PROXY" --data "$(printf '{"name":"%s"}' "$sel")" >/dev/null 2>&1
+    redirect "switched"
+  fi
+  redirect "badsel"
+}
+
 render() {
   local msg="$1" t="" cls="" enabled state rows nm tp sv
   case "$msg" in
@@ -173,6 +187,8 @@ render() {
     empty)       t="✗ Пустая ссылка."; cls="err";;
     parsefail|writefail) t="✗ Ошибка обработки ссылки."; cls="err";;
     noname)      t="✗ Не указано имя для удаления."; cls="err";;
+    switched)    t="✓ Активный сервер переключён."; cls="ok";;
+    badsel)      t="✗ Не удалось переключить (нет такого сервера)."; cls="err";;
     *) t="";;
   esac
   enabled="$(uci -q get nikki.config.enabled)"
@@ -184,6 +200,26 @@ render() {
     rows="$rows<tr><td>$(html_escape "$nm")</td><td>$(html_escape "$tp")</td><td>$(html_escape "$sv")</td><td><form method=post onsubmit=\"return confirm('Удалить $(html_escape "$nm")?')\"><input type=hidden name=action value=del><input type=hidden name=delname value=\"$(html_escape "$nm")\"><button class=del>✕</button></form></td></tr>"
   done < <(yq '.proxies[]? | [.name, .type, .server] | @tsv' "$PROFILE" 2>/dev/null)
   [ -n "$rows" ] || rows="<tr><td colspan=4 class=empty>пока нет серверов</td></tr>"
+
+  # --- server switcher (mihomo Selector group PROXY) ---
+  local sw_secret sw_json sw_cur sw_members sw_html sw_block m checked
+  sw_secret="$(uci -q get nikki.mixin.api_secret)"
+  sw_json="$(curl -s -m 4 -H "Authorization: Bearer $sw_secret" "http://127.0.0.1:9090/proxies/PROXY" 2>/dev/null)"
+  sw_cur="$(printf '%s' "$sw_json" | yq -p=json '.now' 2>/dev/null)"
+  sw_members="$(printf '%s' "$sw_json" | yq -p=json '.all[]' 2>/dev/null)"
+  sw_html=""
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    checked=""; [ "$m" = "$sw_cur" ] && checked=" checked"
+    sw_html="$sw_html<label class=\"radio\"><input type=\"radio\" name=\"server\" value=\"$(html_escape "$m")\"$checked> $(html_escape "$m")</label>"
+  done <<SWEOF
+$sw_members
+SWEOF
+  if [ -n "$sw_html" ]; then
+    sw_block="<h2>Активный сервер</h2><p class=\"note\">Сейчас: <b>$(html_escape "${sw_cur:-?}")</b></p><form method=\"post\"><input type=\"hidden\" name=\"action\" value=\"select\"><div class=\"radios\">$sw_html</div><button type=\"submit\">Переключить</button></form>"
+  else
+    sw_block="<h2>Активный сервер</h2><p class=\"note\">nikki не запущен — переключение недоступно.</p>"
+  fi
 
   send_headers
   cat <<HTML
@@ -202,6 +238,8 @@ render() {
   table{width:100%;border-collapse:collapse;margin-top:.6rem}
   th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid #8883;font-size:.95rem;word-break:break-all}
   td form{display:inline}
+  .radios label{display:inline-flex;align-items:center;gap:.35rem;margin:.15rem 1rem .15rem 0;font-weight:400}
+  input[type=radio]{width:auto;margin:0}
   .msg{padding:.7rem 1rem;border-radius:8px;margin:.8rem 0;font-weight:600}
   .ok{background:#16a34a22;color:#16a34a} .err{background:#dc262622;color:#dc2626}
   .note{color:#8a8a8a;font-size:.9rem} .empty{color:#8a8a8a;text-align:center}
@@ -219,6 +257,7 @@ HTML
 <input name="name" placeholder="если пусто — возьму из ссылки (после #)">
 <button type="submit">Добавить сервер</button>
 </form>
+$sw_block
 <h2>Текущие серверы</h2>
 <table><thead><tr><th>Имя</th><th>Тип</th><th>Сервер</th><th></th></tr></thead><tbody>
 $rows
@@ -239,6 +278,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
   case "$action" in
     add) do_add "$(qp link "$body")" "$(qp name "$body")";;
     del) do_del "$(qp delname "$body")";;
+    select) do_select "$(qp server "$body")";;
     *)   redirect "badlink";;
   esac
 fi
